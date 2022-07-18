@@ -1,74 +1,116 @@
-const Sequelize = require('sequelize');
+const Sequelize = require("sequelize");
 const { STRING } = Sequelize;
-const jwt = require('jsonwebtoken')
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 const config = {
-  logging: false
+  logging: false,
 };
 
-if(process.env.LOGGING){
+if (process.env.LOGGING) {
   delete config.logging;
 }
-const conn = new Sequelize(process.env.DATABASE_URL || 'postgres://localhost/acme_db', config);
+const db = new Sequelize(
+  process.env.DATABASE_URL || "postgres://localhost/acme_db",
+  config
+);
 
-const User = conn.define('user', {
+const User = db.define("user", {
   username: STRING,
-  password: STRING
+  password: STRING,
 });
 
-User.byToken = async(token)=> {
+const Note = db.define("note", {
+  text: STRING,
+});
+
+//Associations
+//As per the workshop: A note belongs to a user, and a user can have several notes
+Note.belongsTo(User);
+User.hasMany(Note);
+
+User.prototype.generateToken = async function () {
   try {
-    const user = await User.findByPk(token);
-    if(user){
+    const token = await jwt.sign({ id: this.id }, process.env.JWT);
+    return { token };
+  } catch (err) {
+    console.error(err);
+  }
+};
+
+User.byToken = async function (token) {
+  try {
+    const payload = await jwt.verify(token, process.env.JWT);
+    if (payload) {
+      //find user by payload which contains the user id
+      const user = await User.findByPk(payload.id);
       return user;
     }
-    const error = Error('bad credentials');
+    const error = Error("bad credentials");
     error.status = 401;
     throw error;
-  }
-  catch(ex){
-    const error = Error('bad credentials');
+  } catch (ex) {
+    const error = Error("bad credentials");
     error.status = 401;
     throw error;
   }
 };
 
-User.authenticate = async({ username, password })=> {
+User.authenticate = async ({ username, password }) => {
   const user = await User.findOne({
     where: {
       username,
-      password
-    }
+    },
   });
-  if(user){
-    return user.id; 
+  const match = await bcrypt.compare(password, user.password);
+  if (match) {
+    return user;
   }
-  const error = Error('bad credentials');
+  const error = Error("bad credentials");
   error.status = 401;
   throw error;
 };
 
-const syncAndSeed = async()=> {
-  await conn.sync({ force: true });
+User.addHook('beforeCreate', async(user)=> {
+  if(user.changed('password')){
+    user.password = await bcrypt.hash(user.password, 3);
+  }
+});
+
+const syncAndSeed = async () => {
+  await db.sync({ force: true });
   const credentials = [
-    { username: 'lucy', password: 'lucy_pw'},
-    { username: 'moe', password: 'moe_pw'},
-    { username: 'larry', password: 'larry_pw'}
+    { username: "lucy", password: "lucy_pw" },
+    { username: "moe", password: "moe_pw" },
+    { username: "larry", password: "larry_pw" },
   ];
   const [lucy, moe, larry] = await Promise.all(
-    credentials.map( credential => User.create(credential))
+    credentials.map((credential) => User.create(credential))
   );
+
+  const notes = [
+    { text: "hello world" },
+    { text: "reminder to buy groceries" },
+    { text: "reminder to do laundry" },
+  ];
+  const [note1, note2, note3] = await Promise.all(
+    notes.map((note) => Note.create(note))
+  );
+  await lucy.setNotes(note1);
+  await moe.setNotes([note2, note3]);
+
   return {
     users: {
       lucy,
       moe,
-      larry
-    }
+      larry,
+    },
   };
 };
 
 module.exports = {
   syncAndSeed,
   models: {
-    User
-  }
+    User,
+    Note
+  },
 };
